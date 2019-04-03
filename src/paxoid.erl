@@ -33,6 +33,8 @@
 -define(INIT_DISC_TIMEOUT,  3000).
 -define(INIT_JOIN_TIMEOUT, 15000).
 
+-define(DISTERL, false).
+
 -type num() :: pos_integer().
 
 -type step_round() :: {RandomInteger :: integer(), Node :: node()}.
@@ -286,6 +288,15 @@ info(Name) ->
 %%  Send a synchronization message to all the specified nodes.
 %%
 sync_info(Name, Node, Nodes, Max, TTL) ->
+    % case ?DISTERL of 
+    %     true ->
+    %         _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL});
+    %     false ->
+    %         lists:foreach(fun(N) ->
+    %             partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {sync_info, Node, Nodes, Max, TTL}, [])
+    %         end, Nodes)
+    % end,
+    % ok.
     _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL}),
     ok.
 
@@ -506,6 +517,8 @@ handle_cast({step_prepare, StepNum, Round, ProposerNode, Partition}, State = #st
     {noreply, State#state{steps = Steps#{StepNum => NewStep}}};
 
 handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State = #state{name = Name, steps = Steps}) ->
+    error_logger:info_msg("[cmeik] receeived prepared at node ~p for step: ~p", [node(), StepNum]),
+
     % PAXOS(step): ACCEPTOR --prepared--> PROPOSER.
     Step = #step{
         partition  = OldPartition,
@@ -539,6 +552,8 @@ handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State =
     {noreply, State#state{steps = Steps#{StepNum => NewStep}}};
 
 handle_cast({step_accept, StepNum, Proposal = {Round, _Value}, Partition}, State = #state{name = Name, node = Node, steps = Steps}) ->
+    error_logger:info_msg("[cmeik] receeived accept at node ~p for step: ~p, proposal: ~p", [node(), StepNum, Proposal]),
+
     Step = #step{
         partition = OldPartition,
         a_promise = Promise
@@ -857,7 +872,9 @@ step_do_initialize(Purpose, Timeout, State) ->
     StepRef   = erlang:make_ref(),
     StepNum   = lists:max([Max | maps:keys(Steps)]) + 1,
     Partition = maps:keys(Seen), % Try to agree across all the reachable nodes, not only the partition.
-    Round     = {rand:uniform(), Node},
+    % Random    = erlang:unique_integer([monotonic, positive]), %% TODO: Determinism.
+    Random    = rand:uniform(),
+    Round     = {Random, Node}, %% TODO: Determinism.
     ok = step_prepare(Name, StepNum, Partition, Round, Node),
     NewStep = #step{
         purpose     = Purpose,
@@ -959,7 +976,14 @@ step_do_cleanup(State = #state{min = Min, steps = Steps}) ->
 %%  Sent from a proposer to all acceptors.
 %%
 step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
-    abcast = gen_server:abcast(Partition, Name, {step_prepare, StepNum, Round, ProposerNode, Partition}),
+    case ?DISTERL of 
+        true ->
+            abcast = gen_server:abcast(Partition, Name, {step_prepare, StepNum, Round, ProposerNode, Partition});
+        false ->
+            lists:foreach(fun(N) ->
+                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_prepare, StepNum, Round, ProposerNode, Partition}, [])
+            end, Partition)
+    end,
     ok.
 
 
@@ -968,7 +992,13 @@ step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
 %%  Sent from all the acceptors to a proposer.
 %%
 step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
-    ok = gen_server:cast({Name, ProposerNode}, {step_prepared, StepNum, Accepted, AcceptorNode, Partition}).
+    case ?DISTERL of 
+        true ->
+            ok = gen_server:cast({Name, ProposerNode}, {step_prepared, StepNum, Accepted, AcceptorNode, Partition});
+        false ->
+            partisan_pluggable_peer_service_manager:cast_message(ProposerNode, undefined, Name, {step_prepared, StepNum, Accepted, AcceptorNode, Partition}, [])
+    end,
+    ok.
 
 
 %%  @private
@@ -976,7 +1006,16 @@ step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
 %%  Sent from a proposer to all acceptors.
 %%
 step_accept(Name, StepNum, Partition, Proposal) ->
-    abcast = gen_server:abcast(Partition, Name, {step_accept, StepNum, Proposal, Partition}),
+    error_logger:info_msg("[cmeik] sending accept broadcast ~p => ~p for step: ~p proposal: ~p", [node(), Partition, StepNum, Proposal]),
+
+    case ?DISTERL of 
+        true ->
+            abcast = gen_server:abcast(Partition, Name, {step_accept, StepNum, Proposal, Partition});
+        false ->
+            lists:foreach(fun(N) ->
+                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_accept, StepNum, Proposal, Partition}, [])
+            end, Partition)
+    end,
     ok.
 
 
@@ -985,7 +1024,16 @@ step_accept(Name, StepNum, Partition, Proposal) ->
 %%  Sent from from all acceptors to all the learners.
 %%
 step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode) ->
-    abcast = gen_server:abcast(Partition, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}),
+    error_logger:info_msg("[cmeik] sending accepted broadcast ~p => ~p for step: ~p proposal: ~p", [node(), Partition, StepNum, Proposal]),
+
+    case ?DISTERL of 
+        true ->
+            abcast = gen_server:abcast(Partition, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition});
+        false ->
+            lists:foreach(fun(N) ->
+                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}, [])
+            end, Partition)
+    end,
     ok.
 
 
