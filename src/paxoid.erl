@@ -21,7 +21,7 @@
 -behaviour(gen_server).
 -export([start_link/1, start_link/2, start_sup/1, start_sup/2, start_spec/1, start_spec/2]).
 -export([start/0]).
--export([start/1, join/2, next_id/1, next_id/2, info/1]).
+-export([start/1, join/2, max_id/1, next_id/1, next_id/2, info/1]).
 -export([sync_info/5]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export_type([num/0, opts/0]).
@@ -270,15 +270,17 @@ next_id(Name, Timeout) ->
 next_id(Name) ->
     next_id(Name, ?DEFAULT_TIMEOUT).
 
+%%  @doc
+%%  Debug.
+%%
+max_id(Name) ->
+    gen_server:call(Name, {max_id, ?DEFAULT_TIMEOUT}, ?DEFAULT_TIMEOUT).
 
 %%  @doc
 %%  Returns descriptive information about this node / process.
 %%
 info(Name) ->
     gen_server:call(Name, {info}).
-
-
-
 
 %%% ============================================================================
 %%% Internal communication.
@@ -299,8 +301,6 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
     % ok.
     _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL}),
     ok.
-
-
 
 %%% ============================================================================
 %%% Internal state.
@@ -407,6 +407,8 @@ handle_call({next_id, Timeout}, From, State = #state{mode = Mode}) ->
     end,
     {noreply, NewState};
 
+handle_call({max_id, _Timeout}, _From, State = #state{max = Max}) ->
+    {reply, {ok, Max}, State};
 
 handle_call({info}, _From, State) ->
     #state{
@@ -516,8 +518,8 @@ handle_cast({step_prepare, StepNum, Round, ProposerNode, Partition}, State = #st
     end,
     {noreply, State#state{steps = Steps#{StepNum => NewStep}}};
 
-handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State = #state{name = Name, steps = Steps}) ->
-    error_logger:info_msg("[cmeik] receeived prepared at node ~p for step: ~p", [node(), StepNum]),
+handle_cast({step_prepared, FromNode, StepNum, Accepted, AcceptorNode, Partition}, State = #state{name = Name, steps = Steps}) ->
+    error_logger:info_msg("[cmeik] received prepared at node ~p from node ~p for step: ~p", [node(), FromNode, StepNum]),
 
     % PAXOS(step): ACCEPTOR --prepared--> PROPOSER.
     Step = #step{
@@ -539,7 +541,7 @@ handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State =
         p_prms    = NewPromised,
         p_prm_max = NewAccepted
     },
-    case length(NewPromised) * 2 > length(NewPartition) of
+    case length(NewPromised) * 2 > length(NewPartition) andalso not (length(Promised) * 2 > length(NewPartition)) of 
         true ->
             Proposal = case NewAccepted of
                 undefined   -> Proposed;
@@ -551,8 +553,8 @@ handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State =
     end,
     {noreply, State#state{steps = Steps#{StepNum => NewStep}}};
 
-handle_cast({step_accept, StepNum, Proposal = {Round, _Value}, Partition}, State = #state{name = Name, node = Node, steps = Steps}) ->
-    error_logger:info_msg("[cmeik] receeived accept at node ~p for step: ~p, proposal: ~p", [node(), StepNum, Proposal]),
+handle_cast({step_accept, FromNode, StepNum, Proposal = {Round, _Value}, Partition}, State = #state{name = Name, node = Node, steps = Steps}) ->
+    error_logger:info_msg("[cmeik] received accept at node ~p from ~p for step: ~p, proposal: ~p", [node(), FromNode, StepNum, Proposal]),
 
     Step = #step{
         partition = OldPartition,
@@ -561,7 +563,7 @@ handle_cast({step_accept, StepNum, Proposal = {Round, _Value}, Partition}, State
     NewPartition = lists:usort(Partition ++ OldPartition),
     NewStep = case Round >= Promise of
         true ->
-            ok = step_accepted(Name, StepNum, NewPartition, Proposal, Node),
+            ok = step_accepted(Name, StepNum, NewPartition, Proposal, Node, FromNode),
             Step#step{
                 partition  = NewPartition,
                 a_accepted = Proposal
@@ -725,6 +727,7 @@ handle_info(sync_timer, State = #state{name = Name, node = ThisNode, known = Kno
     NewPart = lists:filter(fun (PartNode) ->
         (PartNode =:= ThisNode) orelse maps:is_key(PartNode, NewSeen)
     end, Part),
+    error_logger:warning_msg("[cmeik] Partition at node: ~p is: ~p~n", [ThisNode, NewPart]),
     %
     % TODO: Should we update the partitions for all the ongoing steps?
     %
@@ -741,6 +744,7 @@ handle_info({step_giveup, StepNum, StepRef}, State) ->
     {noreply, NewState};
 
 handle_info({step_retry, StepNum, StepRef}, State) ->
+    error_logger:warning_msg("[cmeik] step retry is firing on node: ~p~n", [node()]),
     NewState = step_do_retry(StepNum, StepRef, State),
     {noreply, NewState};
 
@@ -872,8 +876,8 @@ step_do_initialize(Purpose, Timeout, State) ->
     StepRef   = erlang:make_ref(),
     StepNum   = lists:max([Max | maps:keys(Steps)]) + 1,
     Partition = maps:keys(Seen), % Try to agree across all the reachable nodes, not only the partition.
-    % Random    = erlang:unique_integer([monotonic, positive]), %% TODO: Determinism.
-    Random    = rand:uniform(),
+    Random    = erlang:unique_integer([monotonic, positive]), %% TODO: Determinism.
+    % Random    = rand:uniform(),
     Round     = {Random, Node}, %% TODO: Determinism.
     ok = step_prepare(Name, StepNum, Partition, Round, Node),
     NewStep = #step{
@@ -913,6 +917,7 @@ step_do_retry(StepNum, StepRef, State = #state{name = Name, node = Node, seen = 
     case Steps of
         #{StepNum := Step = #step{ref = StepRef, p_proposed = {Round, _Value}, purpose = Purpose}} when Purpose =/= undefined ->
             NewPartition = maps:keys(Seen),
+            error_logger:info_msg("[cmeik] proposer: ~p retrying for step: ~p with new members: ~p~n", [node(), StepNum, NewPartition]),
             ok = step_prepare(Name, StepNum, NewPartition, Round, Node),
             NewStep = Step#step{
                 partition  = NewPartition,
@@ -976,6 +981,8 @@ step_do_cleanup(State = #state{min = Min, steps = Steps}) ->
 %%  Sent from a proposer to all acceptors.
 %%
 step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
+    error_logger:info_msg("[cmeik] sending prepare broadcast ~p => ~p for step: ~p", [node(), Partition, StepNum]),
+
     case ?DISTERL of 
         true ->
             abcast = gen_server:abcast(Partition, Name, {step_prepare, StepNum, Round, ProposerNode, Partition});
@@ -992,11 +999,13 @@ step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
 %%  Sent from all the acceptors to a proposer.
 %%
 step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
+    error_logger:info_msg("[cmeik] sending prepared ~p => ~p for step: ~p", [node(), ProposerNode, StepNum]),
+
     case ?DISTERL of 
         true ->
-            ok = gen_server:cast({Name, ProposerNode}, {step_prepared, StepNum, Accepted, AcceptorNode, Partition});
+            ok = gen_server:cast({Name, ProposerNode}, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition});
         false ->
-            partisan_pluggable_peer_service_manager:cast_message(ProposerNode, undefined, Name, {step_prepared, StepNum, Accepted, AcceptorNode, Partition}, [])
+            partisan_pluggable_peer_service_manager:cast_message(ProposerNode, undefined, Name, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition}, [])
     end,
     ok.
 
@@ -1010,10 +1019,10 @@ step_accept(Name, StepNum, Partition, Proposal) ->
 
     case ?DISTERL of 
         true ->
-            abcast = gen_server:abcast(Partition, Name, {step_accept, StepNum, Proposal, Partition});
+            abcast = gen_server:abcast(Partition, Name, {step_accept, node(), StepNum, Proposal, Partition});
         false ->
             lists:foreach(fun(N) ->
-                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_accept, StepNum, Proposal, Partition}, [])
+                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_accept, node(), StepNum, Proposal, Partition}, [])
             end, Partition)
     end,
     ok.
@@ -1023,16 +1032,14 @@ step_accept(Name, StepNum, Partition, Proposal) ->
 %%  Paxos, phase 2, the `accepted' message.
 %%  Sent from from all acceptors to all the learners.
 %%
-step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode) ->
-    error_logger:info_msg("[cmeik] sending accepted broadcast ~p => ~p for step: ~p proposal: ~p", [node(), Partition, StepNum, Proposal]),
+step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode, ProposerNode) ->
+    error_logger:info_msg("[cmeik] sending accepted ~p => ~p for step: ~p proposal: ~p, acceptor_node: ~p, proposer_node: ~p", [node(), ProposerNode, StepNum, Proposal, AcceptorNode, ProposerNode]),
 
     case ?DISTERL of 
         true ->
-            abcast = gen_server:abcast(Partition, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition});
+            _ = gen_server:cast(ProposerNode, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition});
         false ->
-            lists:foreach(fun(N) ->
-                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}, [])
-            end, Partition)
+            partisan_pluggable_peer_service_manager:cast_message(ProposerNode, undefined, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}, [])
     end,
     ok.
 
