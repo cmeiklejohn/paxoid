@@ -290,16 +290,14 @@ info(Name) ->
 %%  Send a synchronization message to all the specified nodes.
 %%
 sync_info(Name, Node, Nodes, Max, TTL) ->
-    % case ?DISTERL of 
-    %     true ->
-    %         _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL});
-    %     false ->
-    %         lists:foreach(fun(N) ->
-    %             partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {sync_info, Node, Nodes, Max, TTL}, [])
-    %         end, Nodes)
-    % end,
-    % ok.
-    _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL}),
+    case ?DISTERL of 
+        true ->
+            _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL});
+        false ->
+            lists:foreach(fun(N) ->
+                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {sync_info, Node, Nodes, Max, TTL}, [])
+            end, Nodes)
+    end,
     ok.
 
 %%% ============================================================================
