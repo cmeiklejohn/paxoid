@@ -386,7 +386,7 @@ init({Name, Opts}) ->
                 joining = #{},
                 dup_ids = []
             },
-            ok = ?MODULE:sync_info(Name, Node, Known, Max, 1),
+            ok = ?MODULE:sync_info(Name, Node, Known, Max, 0),
             _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
             TmpStateC = cb_handle_changed_cluster(InitNodes, State),
             TmpStateP = cb_handle_changed_partition([], TmpStateC),
@@ -463,7 +463,7 @@ handle_cast({join, Nodes}, State = #state{name = Name, node = Node, known = Know
         known = NewKnown
     },
     NewState = cb_handle_changed_cluster(Known, TmpState),
-    ok = ?MODULE:sync_info(Name, Node, NewKnown, Max, 1),
+    ok = ?MODULE:sync_info(Name, Node, NewKnown, Max, 0),
     {noreply, NewState};
 
 handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node = ThisNode, mode = Mode, known = Known, seen = Seen, max = OldMax}) ->
@@ -730,6 +730,8 @@ handle_info(sync_timer, State = #state{name = Name, node = ThisNode, known = Kno
     % TODO: Should we update the partitions for all the ongoing steps?
     %
     ok = ?MODULE:sync_info(Name, ThisNode, Known, Max, 1),
+    error_logger:info_msg("[cmeik] max at node ~p at sync_timer: ~p~n", [node(), Max]),
+    ok = ?MODULE:sync_info(Name, ThisNode, Known, Max, 0),
     _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
     NewState = cb_handle_changed_partition(Part, State#state{
         seen = NewSeen,
