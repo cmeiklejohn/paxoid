@@ -295,9 +295,36 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
             _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL});
         false ->
             lists:foreach(fun(N) ->
-                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {sync_info, Node, Nodes, Max, TTL}, [])
+                MessageId = message_id(N),
+                % error_logger:info_msg("[cmeik] node: ~p got message id: ~p~n", [node(), MessageId]),
+                cast_message(N, Name, {sync_info, MessageId, Node, Nodes, Max, TTL})
             end, Nodes)
     end,
+    ok.
+
+%% @private
+message_id(Node) ->
+    case ets:lookup(?MODULE, Node) of 
+        [] ->
+            %% Update count. 
+            true = ets:insert(?MODULE, [{Node, 0}]),
+
+            %% Return new id.
+            0;
+        [{Node, Counter}] ->
+            %% Update count. 
+            true = ets:insert(?MODULE, [{Node, Counter + 1}]),
+
+            %% Return new id.
+            Counter + 1
+    end.
+
+%% @private
+cast_message(Node, Name, Message) ->
+    DeliveryFun = fun() ->
+        partisan_pluggable_peer_service_manager:cast_message(Node, undefined, Name, Message, [])
+    end,
+    spawn_link(DeliveryFun),
     ok.
 
 %%% ============================================================================
@@ -360,6 +387,8 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
 %%
 %%
 init({Name, Opts}) ->
+    ?MODULE = ets:new(?MODULE, [named_table, set]),
+
     Now  = erlang:monotonic_time(millisecond),
     Node = node(),
     Nodes = maps:get(join, Opts, []),
@@ -369,6 +398,8 @@ init({Name, Opts}) ->
     end,
     case CbMod:init(Name, Node, CbArgs) of
         {ok, Max, InitNodes, CbSt} ->
+            % error_logger:info_msg("[cmeik] max at node ~p after init: ~p~n", [node(), Max]),
+
             State = #state{
                 name    = Name,
                 node    = Node,
@@ -466,7 +497,7 @@ handle_cast({join, Nodes}, State = #state{name = Name, node = Node, known = Know
     ok = ?MODULE:sync_info(Name, Node, NewKnown, Max, 0),
     {noreply, NewState};
 
-handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node = ThisNode, mode = Mode, known = Known, seen = Seen, max = OldMax}) ->
+handle_cast({sync_info, _MessageId, Node, Nodes, Max, TTL}, State = #state{name = Name, node = ThisNode, mode = Mode, known = Known, seen = Seen, max = OldMax}) ->
     Now      = erlang:monotonic_time(millisecond),
     NewKnown = lists:usort(Nodes ++ Known),
     NewSeen  = Seen#{Node => Now, ThisNode => Now},
@@ -725,11 +756,10 @@ handle_info(sync_timer, State = #state{name = Name, node = ThisNode, known = Kno
     NewPart = lists:filter(fun (PartNode) ->
         (PartNode =:= ThisNode) orelse maps:is_key(PartNode, NewSeen)
     end, Part),
-    error_logger:warning_msg("[cmeik] Partition at node: ~p is: ~p~n", [ThisNode, NewPart]),
+    error_logger:warning_msg("[cmeik] Partition at node ~p was ~p and is now ~p~n", [ThisNode, NewPart, Part]),
     %
     % TODO: Should we update the partitions for all the ongoing steps?
     %
-    ok = ?MODULE:sync_info(Name, ThisNode, Known, Max, 1),
     error_logger:info_msg("[cmeik] max at node ~p at sync_timer: ~p~n", [node(), Max]),
     ok = ?MODULE:sync_info(Name, ThisNode, Known, Max, 0),
     _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
@@ -988,7 +1018,7 @@ step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
             abcast = gen_server:abcast(Partition, Name, {step_prepare, StepNum, Round, ProposerNode, Partition});
         false ->
             lists:foreach(fun(N) ->
-                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_prepare, StepNum, Round, ProposerNode, Partition}, [])
+                cast_message(N, Name, {step_prepare, StepNum, Round, ProposerNode, Partition})
             end, Partition)
     end,
     ok.
@@ -1005,7 +1035,7 @@ step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
         true ->
             ok = gen_server:cast({Name, ProposerNode}, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition});
         false ->
-            partisan_pluggable_peer_service_manager:cast_message(ProposerNode, undefined, Name, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition}, [])
+            cast_message(ProposerNode, Name, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition})
     end,
     ok.
 
@@ -1022,7 +1052,7 @@ step_accept(Name, StepNum, Partition, Proposal) ->
             abcast = gen_server:abcast(Partition, Name, {step_accept, node(), StepNum, Proposal, Partition});
         false ->
             lists:foreach(fun(N) ->
-                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_accept, node(), StepNum, Proposal, Partition}, [])
+                cast_message(N, Name, {step_accept, node(), StepNum, Proposal, Partition})
             end, Partition)
     end,
     ok.
@@ -1039,7 +1069,7 @@ step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode, ProposerNode) ->
         true ->
             _ = gen_server:cast(ProposerNode, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition});
         false ->
-            partisan_pluggable_peer_service_manager:cast_message(ProposerNode, undefined, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}, [])
+            cast_message(ProposerNode, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition})
     end,
     ok.
 
