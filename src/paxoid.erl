@@ -647,6 +647,8 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
                         steps = Steps#{StepNum => NewStep}
                     };
                 {ThisNode, {reply, Caller}} ->
+                    error_logger:warning_msg("[cmeik] id assigned for our node: ~p, moving purpose to undefined~n", [ThisNode]),
+
                     % Have a number assigned to our node, lets use it.
                     {ok, NewCbSt} = CbMod:handle_new_id(StepNum, CbSt),
                     _ = gen_server:reply(Caller, StepNum),
@@ -656,6 +658,8 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
                         steps = Steps#{StepNum => NewStep#step{purpose = undefined, ref = chosen}}
                     };
                 {ThisNode, {join,  DupId}} ->
+                    error_logger:warning_msg("[cmeik] join for node: ~p with dup id: ~p~n", [ThisNode, DupId]),
+
                     % Have a number assigned to our node, lets use it.
                     % The purpose was to use the ID to replace a conflicted one.
                     {ok, NewCbSt} = CbMod:handle_new_map(DupId, StepNum, CbSt),
@@ -666,6 +670,8 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
                     },
                     join_sync_id_allocated(DupId, StepNum, TmpState);
                 {OtherNode, undefined} when OtherNode =/= ThisNode ->
+                    error_logger:warning_msg("[cmeik] step proposed by other node: ~p is not ~p~n", [ThisNode, OtherNode]),
+
                     % The step was initiated by other node, so we
                     % just update our max value.
                     {ok, NewCbSt} = case NewMax of
