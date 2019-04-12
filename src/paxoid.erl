@@ -768,11 +768,14 @@ handle_info(sync_timer, State = #state{name = Name, node = ThisNode, known = Kno
     NewPart = lists:filter(fun (PartNode) ->
         (PartNode =:= ThisNode) orelse maps:is_key(PartNode, NewSeen)
     end, Part),
-    error_logger:warning_msg("[cmeik] Partition at node ~p was ~p and is now ~p~n", [ThisNode, NewPart, Part]),
+    % error_logger:warning_msg("[cmeik] Partition at node ~p was ~p and is now ~p~n", [ThisNode, NewPart, Part]),
+
     %
     % TODO: Should we update the partitions for all the ongoing steps?
     %
-    error_logger:info_msg("[cmeik] max at node ~p at sync_timer: ~p~n", [node(), Max]),
+
+    % error_logger:info_msg("[cmeik] max at node ~p at sync_timer: ~p~n", [node(), Max]),
+
     ok = ?MODULE:sync_info(Name, ThisNode, Known, Max, 0),
     _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
     NewState = cb_handle_changed_partition(Part, State#state{
