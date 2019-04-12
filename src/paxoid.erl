@@ -442,6 +442,7 @@ init({Name, Opts}) ->
 %%
 %%
 handle_call({next_id, Timeout}, From, State = #state{mode = Mode}) ->
+    error_logger:info_msg("[cmeik] starting new consensus round at node: ~p, mode: ~p", [node(), Mode]),
     NewState = case Mode of
         ready -> step_do_initialize({reply, From}, Timeout, State);
         _     -> phase_enqueue_request(From, Timeout, State)
@@ -594,8 +595,8 @@ handle_cast({step_prepared, FromNode, StepNum, Accepted, AcceptorNode, Partition
     end,
     {noreply, State#state{steps = Steps#{StepNum => NewStep}}};
 
-handle_cast({step_accept, FromNode, StepNum, Proposal = {Round, _Value}, Partition}, State = #state{name = Name, node = Node, steps = Steps}) ->
-    error_logger:info_msg("[cmeik] received accept at node ~p from ~p for step: ~p, proposal: ~p", [node(), FromNode, StepNum, Proposal]),
+handle_cast({step_accept, FromNode, StepNum, Proposal = {Round, Value}, Partition}, State = #state{name = Name, node = Node, steps = Steps}) ->
+    error_logger:info_msg("[cmeik] received accept at node ~p from ~p for step: ~p, proposal: ~p, value: ~p", [node(), FromNode, StepNum, Proposal, Value]),
 
     Step = #step{
         partition = OldPartition,
@@ -976,7 +977,7 @@ step_do_retry(StepNum, StepRef, State = #state{name = Name, node = Node, seen = 
     case Steps of
         #{StepNum := Step = #step{ref = StepRef, p_proposed = {Round, _Value}, purpose = Purpose}} when Purpose =/= undefined ->
             NewPartition = maps:keys(Seen),
-            error_logger:info_msg("[cmeik] proposer: ~p retrying for step: ~p with new members: ~p~n", [node(), StepNum, NewPartition]),
+            error_logger:info_msg("[cmeik] proposer: ~p retrying for step: ~p with members: ~p and purpose: ~p ~n", [node(), StepNum, NewPartition, Purpose]),
             ok = step_prepare(Name, StepNum, NewPartition, Round, Node),
             NewStep = Step#step{
                 partition  = NewPartition,
