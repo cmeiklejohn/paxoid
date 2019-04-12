@@ -786,7 +786,7 @@ handle_info({step_giveup, StepNum, StepRef}, State) ->
     {noreply, NewState};
 
 handle_info({step_retry, StepNum, StepRef}, State) ->
-    error_logger:warning_msg("[cmeik] step retry is firing on node: ~p~n", [node()]),
+    error_logger:warning_msg("[cmeik] step retry is firing on node: ~p for step: ~p~n", [node(), StepNum]),
     NewState = step_do_retry(StepNum, StepRef, State),
     {noreply, NewState};
 
