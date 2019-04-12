@@ -319,6 +319,8 @@ message_id(Node) ->
             Counter + 1
     end.
 
+-define(DELAY, 500).
+
 %% @private
 cast_message(Node, Name, Message) ->
 cast_message(Node, Name, Message, Delay) ->
