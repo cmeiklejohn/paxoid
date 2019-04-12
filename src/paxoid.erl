@@ -639,8 +639,12 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
     NewMax = erlang:max(Max, StepNum),
     NewState = case length(NewAccepted) * 2 > length(NewPartition) of
         true ->
+            error_logger:warning_msg("[cmeik] received majority acceptance at node: ~p", [ThisNode]),
+
             case {Value, Purpose} of
                 {ThisNode, undefined} ->
+                    error_logger:warning_msg("[cmeik] is already for node: ~p~n", [ThisNode]),
+
                     % This step was already processed.
                     State#state{
                         max   = NewMax,
@@ -961,6 +965,7 @@ step_do_next_attempt(StepNum, State = #state{steps = Steps}) ->
         steps = Steps#{StepNum => Step#step{purpose = undefined}}
     },
     NewTimeout = erlang:max(0, GiveupTime - erlang:system_time(millisecond)),
+    error_logger:info_msg("[cmeik] node ~p is about to propose new value, max", [node()]),
     step_do_initialize(Purpose, NewTimeout, TmpState).
 
 
