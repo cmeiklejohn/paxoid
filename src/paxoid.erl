@@ -296,8 +296,8 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
         false ->
             lists:foreach(fun(N) ->
                 MessageId = message_id(N),
-                % error_logger:info_msg("[cmeik] node: ~p got message id: ~p~n", [node(), MessageId]),
-                cast_message(N, Name, {sync_info, MessageId, Node, Nodes, Max, TTL})
+                cast_message(N, Name, {sync_info, MessageId, Node, Nodes, Max, TTL}, 0)
+                % cast_message(N, Name, {sync_info, MessageId, Node, Nodes, 0, TTL}, 0) %% TODO: Don't synchronize maximum value, for now.
             end, Nodes)
     end,
     ok.
