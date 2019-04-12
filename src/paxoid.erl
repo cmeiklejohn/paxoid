@@ -321,9 +321,20 @@ message_id(Node) ->
 
 %% @private
 cast_message(Node, Name, Message) ->
+cast_message(Node, Name, Message, Delay) ->
     DeliveryFun = fun() ->
+        % error_logger:info_msg("[cmeik] sending message from node ~p to node ~p: ~p~n", [node(), Node, Message]),
+
+        case Delay of 
+            0 -> 
+                ok;
+            _ ->
+                timer:sleep(Delay)
+        end,
+
         partisan_pluggable_peer_service_manager:cast_message(Node, undefined, Name, Message, [])
     end,
+
     spawn_link(DeliveryFun),
     ok.
 
@@ -1018,7 +1029,7 @@ step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
             abcast = gen_server:abcast(Partition, Name, {step_prepare, StepNum, Round, ProposerNode, Partition});
         false ->
             lists:foreach(fun(N) ->
-                cast_message(N, Name, {step_prepare, StepNum, Round, ProposerNode, Partition})
+                cast_message(N, Name, {step_prepare, StepNum, Round, ProposerNode, Partition}, ?DELAY)
             end, Partition)
     end,
     ok.
@@ -1035,7 +1046,7 @@ step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
         true ->
             ok = gen_server:cast({Name, ProposerNode}, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition});
         false ->
-            cast_message(ProposerNode, Name, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition})
+            cast_message(ProposerNode, Name, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition}, ?DELAY)
     end,
     ok.
 
@@ -1052,7 +1063,7 @@ step_accept(Name, StepNum, Partition, Proposal) ->
             abcast = gen_server:abcast(Partition, Name, {step_accept, node(), StepNum, Proposal, Partition});
         false ->
             lists:foreach(fun(N) ->
-                cast_message(N, Name, {step_accept, node(), StepNum, Proposal, Partition})
+                cast_message(N, Name, {step_accept, node(), StepNum, Proposal, Partition}, ?DELAY)
             end, Partition)
     end,
     ok.
@@ -1063,13 +1074,15 @@ step_accept(Name, StepNum, Partition, Proposal) ->
 %%  Sent from from all acceptors to all the learners.
 %%
 step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode, ProposerNode) ->
-    error_logger:info_msg("[cmeik] sending accepted ~p => ~p for step: ~p proposal: ~p, acceptor_node: ~p, proposer_node: ~p", [node(), ProposerNode, StepNum, Proposal, AcceptorNode, ProposerNode]),
+    error_logger:info_msg("[cmeik] sending accepted broadcast ~p => ~p for step: ~p proposal: ~p, acceptor_node: ~p, proposer_node: ~p", [node(), Partition, StepNum, Proposal, AcceptorNode, ProposerNode]),
 
     case ?DISTERL of 
         true ->
-            _ = gen_server:cast(ProposerNode, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition});
+            _ = gen_server:abcast(Partition, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition});
         false ->
-            cast_message(ProposerNode, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition})
+            lists:foreach(fun(N) ->
+                cast_message(N, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}, ?DELAY)
+            end, Partition)
     end,
     ok.
 
