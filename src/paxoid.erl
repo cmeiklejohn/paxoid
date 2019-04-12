@@ -918,8 +918,8 @@ step_do_initialize(Purpose, Timeout, State) ->
     StepRef   = erlang:make_ref(),
     StepNum   = lists:max([Max | maps:keys(Steps)]) + 1,
     Partition = maps:keys(Seen), % Try to agree across all the reachable nodes, not only the partition.
-    Random    = erlang:unique_integer([monotonic, positive]), %% TODO: Determinism.
-    % Random    = rand:uniform(),
+    % Random    = erlang:unique_integer([monotonic, positive]), %% TODO: Determinism.
+    Random    = rand:uniform(),
     Round     = {Random, Node}, %% TODO: Determinism.
     ok = step_prepare(Name, StepNum, Partition, Round, Node),
     NewStep = #step{
