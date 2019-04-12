@@ -322,7 +322,6 @@ message_id(Node) ->
 -define(DELAY, 500).
 
 %% @private
-cast_message(Node, Name, Message) ->
 cast_message(Node, Name, Message, Delay) ->
     DeliveryFun = fun() ->
         % error_logger:info_msg("[cmeik] sending message from node ~p to node ~p: ~p~n", [node(), Node, Message]),
