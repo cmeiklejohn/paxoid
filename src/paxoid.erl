@@ -917,6 +917,9 @@ step_do_initialize(Purpose, Timeout, State) ->
     } = State,
     StepRef   = erlang:make_ref(),
     StepNum   = lists:max([Max | maps:keys(Steps)]) + 1,
+    error_logger:info_msg("[cmeik] node ~p max value: ~p~n", [node(), Max]),
+    error_logger:info_msg("[cmeik] node ~p proposing max step ~p~n", [node(), StepNum]),
+    error_logger:info_msg("[cmeik] node ~p knows: ~p", [node(), maps:keys(Steps)]),
     Partition = maps:keys(Seen), % Try to agree across all the reachable nodes, not only the partition.
     % Random    = erlang:unique_integer([monotonic, positive]), %% TODO: Determinism.
     Random    = rand:uniform(),
