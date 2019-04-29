@@ -936,7 +936,14 @@ step_do_initialize(Purpose, Timeout, State) ->
     error_logger:info_msg("[cmeik] node ~p knows: ~p", [node(), maps:keys(Steps)]),
     Partition = maps:keys(Seen), % Try to agree across all the reachable nodes, not only the partition.
     % Random    = erlang:unique_integer([monotonic, positive]), %% TODO: Determinism.
-    Random    = rand:uniform(),
+    % Random    = rand:uniform(),
+    % Random    = 1,
+    Random = case os:getenv("DISABLE_RANDOM") of 
+        "true" ->
+            1;
+        _ ->
+            rand:uniform()
+    end, 
     Round     = {Random, Node}, %% TODO: Determinism.
     ok = step_prepare(Name, StepNum, Partition, Round, Node),
     NewStep = #step{
