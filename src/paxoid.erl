@@ -26,7 +26,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export_type([num/0, opts/0]).
 
--define(SYNC_INTERVAL,      2000).
+-define(SYNC_INTERVAL,      500).
 -define(DEFAULT_RETRY,      4000).
 -define(DEFAULT_TIMEOUT,   10000).
 -define(MAX_JOIN_SYNC_SIZE, 1000).
