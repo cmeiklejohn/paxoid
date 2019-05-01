@@ -1217,6 +1217,7 @@ join_sync_req(PeerNode, From, Till, MaxCount, State = #state{name = Name, node =
 %%  Handle response to the `join_sync_req'.
 %%
 join_sync_res(PeerNode, From, Till, PeerIds, State) ->
+    error_logger:warning_msg("[cmeik] issuing join for ~p at node ~p with from: ~p till: ~p~n", [PeerNode, node(), From, Till]),
     #state{
         cb_mod  = CbMod,
         cb_st   = CbSt,
@@ -1228,6 +1229,7 @@ join_sync_res(PeerNode, From, Till, PeerIds, State) ->
     %
     % Collect the duplicated ids (and ongoing steps)
     {ok, DuplicatedIds, NewCbSt} = CbMod:handle_check(PeerIds, CbSt),
+    error_logger:warning_msg("[cmeik] duplicated ids at node ~p for join of ~p are ~p~n", [node(), PeerNode, DuplicatedIds]),
     DuplicatedSteps = lists:filter(fun (Id) ->
         case Steps of
             #{Id := #step{purpose = Purpose}} ->
@@ -1314,7 +1316,9 @@ join_finalize(PeerNode, State = #state{name = Name, node = ThisNode, mode = Mode
 %%  Checks, if the join procedure is completed.
 %%
 join_completed(#join{from = From, till = Till, dup_ids = []}) when From >= Till -> true;
-join_completed(#join{from = From, till = Till              }) when From >= Till -> dup_ids;
+join_completed(#join{from = From, till = Till              }) when From >= Till -> 
+    error_logger:warning_msg("[cmeik] join_completed: from: ~p, till: ~p~n", [From, Till]),
+    dup_ids;
 join_completed(#join{                                      })                   -> checking.
 
 
