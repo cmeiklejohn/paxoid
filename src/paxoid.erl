@@ -21,17 +21,19 @@
 -behaviour(gen_server).
 -export([start_link/1, start_link/2, start_sup/1, start_sup/2, start_spec/1, start_spec/2]).
 -export([start/0]).
--export([start/1, join/2, next_id/1, next_id/2, info/1]).
+-export([start/1, join/2, max_id/1, next_id/1, next_id/2, info/1]).
 -export([sync_info/5]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 -export_type([num/0, opts/0]).
 
--define(SYNC_INTERVAL,      1000).
--define(DEFAULT_RETRY,      2000).
+-define(SYNC_INTERVAL,      500).
+-define(DEFAULT_RETRY,      4000).
 -define(DEFAULT_TIMEOUT,   10000).
 -define(MAX_JOIN_SYNC_SIZE, 1000).
 -define(INIT_DISC_TIMEOUT,  3000).
 -define(INIT_JOIN_TIMEOUT, 15000).
+
+-define(DISTERL, false).
 
 -type num() :: pos_integer().
 
@@ -268,15 +270,17 @@ next_id(Name, Timeout) ->
 next_id(Name) ->
     next_id(Name, ?DEFAULT_TIMEOUT).
 
+%%  @doc
+%%  Debug.
+%%
+max_id(Name) ->
+    gen_server:call(Name, {max_id, ?DEFAULT_TIMEOUT}, ?DEFAULT_TIMEOUT).
 
 %%  @doc
 %%  Returns descriptive information about this node / process.
 %%
 info(Name) ->
     gen_server:call(Name, {info}).
-
-
-
 
 %%% ============================================================================
 %%% Internal communication.
@@ -286,10 +290,34 @@ info(Name) ->
 %%  Send a synchronization message to all the specified nodes.
 %%
 sync_info(Name, Node, Nodes, Max, TTL) ->
-    _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL}),
+    case ?DISTERL of 
+        true ->
+            _ = gen_server:abcast(Nodes, Name, {sync_info, Node, Nodes, Max, TTL});
+        false ->
+            lists:foreach(fun(N) ->
+                MessageId = message_id(N),
+                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {sync_info, MessageId, Node, Nodes, Max, TTL}, [])
+                % cast_message(N, Name, {sync_info, MessageId, Node, Nodes, 0, TTL}, 0) %% TODO: Don't synchronize maximum value, for now.
+            end, Nodes)
+    end,
     ok.
 
+%% @private
+message_id(Node) ->
+    case ets:lookup(?MODULE, Node) of 
+        [] ->
+            %% Update count. 
+            true = ets:insert(?MODULE, [{Node, 0}]),
 
+            %% Return new id.
+            0;
+        [{Node, Counter}] ->
+            %% Update count. 
+            true = ets:insert(?MODULE, [{Node, Counter + 1}]),
+
+            %% Return new id.
+            Counter + 1
+    end.
 
 %%% ============================================================================
 %%% Internal state.
@@ -351,6 +379,8 @@ sync_info(Name, Node, Nodes, Max, TTL) ->
 %%
 %%
 init({Name, Opts}) ->
+    ?MODULE = ets:new(?MODULE, [named_table, set]),
+
     Now  = erlang:monotonic_time(millisecond),
     Node = node(),
     Nodes = maps:get(join, Opts, []),
@@ -360,6 +390,8 @@ init({Name, Opts}) ->
     end,
     case CbMod:init(Name, Node, CbArgs) of
         {ok, Max, InitNodes, CbSt} ->
+            % error_logger:info_msg("[cmeik] max at node ~p after init: ~p~n", [node(), Max]),
+
             State = #state{
                 name    = Name,
                 node    = Node,
@@ -377,7 +409,7 @@ init({Name, Opts}) ->
                 joining = #{},
                 dup_ids = []
             },
-            ok = ?MODULE:sync_info(Name, Node, Known, Max, 1),
+            ok = sync_info(Name, Node, Known, Max, 0),
             _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
             TmpStateC = cb_handle_changed_cluster(InitNodes, State),
             TmpStateP = cb_handle_changed_partition([], TmpStateC),
@@ -390,12 +422,15 @@ init({Name, Opts}) ->
 %%
 %%
 handle_call({next_id, Timeout}, From, State = #state{mode = Mode}) ->
+    error_logger:info_msg("[cmeik] starting new consensus round at node: ~p, mode: ~p", [node(), Mode]),
     NewState = case Mode of
         ready -> step_do_initialize({reply, From}, Timeout, State);
         _     -> phase_enqueue_request(From, Timeout, State)
     end,
     {noreply, NewState};
 
+handle_call({max_id, _Timeout}, _From, State = #state{max = Max}) ->
+    {reply, {ok, Max}, State};
 
 handle_call({info}, _From, State) ->
     #state{
@@ -452,10 +487,10 @@ handle_cast({join, Nodes}, State = #state{name = Name, node = Node, known = Know
         known = NewKnown
     },
     NewState = cb_handle_changed_cluster(Known, TmpState),
-    ok = ?MODULE:sync_info(Name, Node, NewKnown, Max, 1),
+    ok = sync_info(Name, Node, NewKnown, Max, 0),
     {noreply, NewState};
 
-handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node = ThisNode, mode = Mode, known = Known, seen = Seen, max = OldMax}) ->
+handle_cast({sync_info, _MessageId, Node, Nodes, Max, TTL}, State = #state{name = Name, node = ThisNode, mode = Mode, known = Known, seen = Seen, max = OldMax}) ->
     Now      = erlang:monotonic_time(millisecond),
     NewKnown = lists:usort(Nodes ++ Known),
     NewSeen  = Seen#{Node => Now, ThisNode => Now},
@@ -477,7 +512,7 @@ handle_cast({sync_info, Node, Nodes, Max, TTL}, State = #state{name = Name, node
         {_, _, _} ->
             TmpState
     end,
-    if TTL  >  0 -> ok = ?MODULE:sync_info(Name, ThisNode, NewKnown, NewMax, TTL - 1);
+    if TTL  >  0 -> ok = sync_info(Name, ThisNode, NewKnown, NewMax, TTL - 1);
        TTL =:= 0 -> ok
     end,
     {noreply, NewState};
@@ -505,7 +540,9 @@ handle_cast({step_prepare, StepNum, Round, ProposerNode, Partition}, State = #st
     end,
     {noreply, State#state{steps = Steps#{StepNum => NewStep}}};
 
-handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State = #state{name = Name, steps = Steps}) ->
+handle_cast({step_prepared, FromNode, StepNum, Accepted, AcceptorNode, Partition}, State = #state{name = Name, steps = Steps}) ->
+    error_logger:info_msg("[cmeik] received prepared at node ~p from node ~p for step: ~p", [node(), FromNode, StepNum]),
+
     % PAXOS(step): ACCEPTOR --prepared--> PROPOSER.
     Step = #step{
         partition  = OldPartition,
@@ -526,7 +563,7 @@ handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State =
         p_prms    = NewPromised,
         p_prm_max = NewAccepted
     },
-    case length(NewPromised) * 2 > length(NewPartition) of
+    case length(NewPromised) * 2 > length(NewPartition) andalso not (length(Promised) * 2 > length(NewPartition)) of 
         true ->
             Proposal = case NewAccepted of
                 undefined   -> Proposed;
@@ -538,7 +575,9 @@ handle_cast({step_prepared, StepNum, Accepted, AcceptorNode, Partition}, State =
     end,
     {noreply, State#state{steps = Steps#{StepNum => NewStep}}};
 
-handle_cast({step_accept, StepNum, Proposal = {Round, _Value}, Partition}, State = #state{name = Name, node = Node, steps = Steps}) ->
+handle_cast({step_accept, FromNode, StepNum, Proposal = {Round, Value}, Partition}, State = #state{name = Name, node = Node, steps = Steps}) ->
+    error_logger:info_msg("[cmeik] received accept at node ~p from ~p for step: ~p, proposal: ~p, value: ~p", [node(), FromNode, StepNum, Proposal, Value]),
+
     Step = #step{
         partition = OldPartition,
         a_promise = Promise
@@ -546,7 +585,7 @@ handle_cast({step_accept, StepNum, Proposal = {Round, _Value}, Partition}, State
     NewPartition = lists:usort(Partition ++ OldPartition),
     NewStep = case Round >= Promise of
         true ->
-            ok = step_accepted(Name, StepNum, NewPartition, Proposal, Node),
+            ok = step_accepted(Name, StepNum, NewPartition, Proposal, Node, FromNode),
             Step#step{
                 partition  = NewPartition,
                 a_accepted = Proposal
@@ -581,14 +620,20 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
     NewMax = erlang:max(Max, StepNum),
     NewState = case length(NewAccepted) * 2 > length(NewPartition) of
         true ->
+            error_logger:warning_msg("[cmeik] received majority acceptance at node: ~p", [ThisNode]),
+
             case {Value, Purpose} of
                 {ThisNode, undefined} ->
+                    error_logger:warning_msg("[cmeik] is already for node: ~p~n", [ThisNode]),
+
                     % This step was already processed.
                     State#state{
                         max   = NewMax,
                         steps = Steps#{StepNum => NewStep}
                     };
                 {ThisNode, {reply, Caller}} ->
+                    error_logger:warning_msg("[cmeik] id assigned for our node: ~p, moving purpose to undefined~n", [ThisNode]),
+
                     % Have a number assigned to our node, lets use it.
                     {ok, NewCbSt} = CbMod:handle_new_id(StepNum, CbSt),
                     _ = gen_server:reply(Caller, StepNum),
@@ -598,6 +643,8 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
                         steps = Steps#{StepNum => NewStep#step{purpose = undefined, ref = chosen}}
                     };
                 {ThisNode, {join,  DupId}} ->
+                    error_logger:warning_msg("[cmeik] join for node: ~p with dup id: ~p~n", [ThisNode, DupId]),
+
                     % Have a number assigned to our node, lets use it.
                     % The purpose was to use the ID to replace a conflicted one.
                     {ok, NewCbSt} = CbMod:handle_new_map(DupId, StepNum, CbSt),
@@ -608,6 +655,8 @@ handle_cast({step_accepted, StepNum, Proposal = {_Round, Value}, AcceptorNode, P
                     },
                     join_sync_id_allocated(DupId, StepNum, TmpState);
                 {OtherNode, undefined} when OtherNode =/= ThisNode ->
+                    error_logger:warning_msg("[cmeik] step proposed by other node: ~p is not ~p~n", [ThisNode, OtherNode]),
+
                     % The step was initiated by other node, so we
                     % just update our max value.
                     {ok, NewCbSt} = case NewMax of
@@ -710,10 +759,15 @@ handle_info(sync_timer, State = #state{name = Name, node = ThisNode, known = Kno
     NewPart = lists:filter(fun (PartNode) ->
         (PartNode =:= ThisNode) orelse maps:is_key(PartNode, NewSeen)
     end, Part),
+    % error_logger:warning_msg("[cmeik] Partition at node ~p was ~p and is now ~p~n", [ThisNode, NewPart, Part]),
+
     %
     % TODO: Should we update the partitions for all the ongoing steps?
     %
-    ok = ?MODULE:sync_info(Name, ThisNode, Known, Max, 1),
+
+    % error_logger:info_msg("[cmeik] max at node ~p at sync_timer: ~p~n", [node(), Max]),
+
+    ok = sync_info(Name, ThisNode, Known, Max, 0),
     _ = erlang:send_after(?SYNC_INTERVAL, self(), sync_timer),
     NewState = cb_handle_changed_partition(Part, State#state{
         seen = NewSeen,
@@ -726,6 +780,7 @@ handle_info({step_giveup, StepNum, StepRef}, State) ->
     {noreply, NewState};
 
 handle_info({step_retry, StepNum, StepRef}, State) ->
+    error_logger:warning_msg("[cmeik] step retry is firing on node: ~p for step: ~p~n", [node(), StepNum]),
     NewState = step_do_retry(StepNum, StepRef, State),
     {noreply, NewState};
 
@@ -856,8 +911,20 @@ step_do_initialize(Purpose, Timeout, State) ->
     } = State,
     StepRef   = erlang:make_ref(),
     StepNum   = lists:max([Max | maps:keys(Steps)]) + 1,
+    error_logger:info_msg("[cmeik] node ~p max value: ~p~n", [node(), Max]),
+    error_logger:info_msg("[cmeik] node ~p proposing max step ~p~n", [node(), StepNum]),
+    error_logger:info_msg("[cmeik] node ~p knows: ~p", [node(), maps:keys(Steps)]),
     Partition = maps:keys(Seen), % Try to agree across all the reachable nodes, not only the partition.
-    Round     = {rand:uniform(), Node},
+    % Random    = erlang:unique_integer([monotonic, positive]), %% TODO: Determinism.
+    % Random    = rand:uniform(),
+    % Random    = 1,
+    Random = case os:getenv("DISABLE_RANDOM") of 
+        "true" ->
+            1;
+        _ ->
+            rand:uniform()
+    end, 
+    Round     = {Random, Node}, %% TODO: Determinism.
     ok = step_prepare(Name, StepNum, Partition, Round, Node),
     NewStep = #step{
         purpose     = Purpose,
@@ -886,6 +953,7 @@ step_do_next_attempt(StepNum, State = #state{steps = Steps}) ->
         steps = Steps#{StepNum => Step#step{purpose = undefined}}
     },
     NewTimeout = erlang:max(0, GiveupTime - erlang:system_time(millisecond)),
+    error_logger:info_msg("[cmeik] node ~p is about to propose new value, max", [node()]),
     step_do_initialize(Purpose, NewTimeout, TmpState).
 
 
@@ -896,6 +964,7 @@ step_do_retry(StepNum, StepRef, State = #state{name = Name, node = Node, seen = 
     case Steps of
         #{StepNum := Step = #step{ref = StepRef, p_proposed = {Round, _Value}, purpose = Purpose}} when Purpose =/= undefined ->
             NewPartition = maps:keys(Seen),
+            error_logger:info_msg("[cmeik] proposer: ~p retrying for step: ~p with members: ~p and purpose: ~p ~n", [node(), StepNum, NewPartition, Purpose]),
             ok = step_prepare(Name, StepNum, NewPartition, Round, Node),
             NewStep = Step#step{
                 partition  = NewPartition,
@@ -959,7 +1028,16 @@ step_do_cleanup(State = #state{min = Min, steps = Steps}) ->
 %%  Sent from a proposer to all acceptors.
 %%
 step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
-    abcast = gen_server:abcast(Partition, Name, {step_prepare, StepNum, Round, ProposerNode, Partition}),
+    error_logger:info_msg("[cmeik] sending prepare broadcast ~p => ~p for step: ~p", [node(), Partition, StepNum]),
+
+    case ?DISTERL of 
+        true ->
+            abcast = gen_server:abcast(Partition, Name, {step_prepare, StepNum, Round, ProposerNode, Partition});
+        false ->
+            lists:foreach(fun(N) ->
+                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_prepare, StepNum, Round, ProposerNode, Partition}, [])
+            end, Partition)
+    end,
     ok.
 
 
@@ -968,7 +1046,15 @@ step_prepare(Name, StepNum, Partition, Round, ProposerNode) ->
 %%  Sent from all the acceptors to a proposer.
 %%
 step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
-    ok = gen_server:cast({Name, ProposerNode}, {step_prepared, StepNum, Accepted, AcceptorNode, Partition}).
+    error_logger:info_msg("[cmeik] sending prepared ~p => ~p for step: ~p", [node(), ProposerNode, StepNum]),
+
+    case ?DISTERL of 
+        true ->
+            ok = gen_server:cast({Name, ProposerNode}, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition});
+        false ->
+            partisan_pluggable_peer_service_manager:cast_message(ProposerNode, undefined, Name, {step_prepared, node(), StepNum, Accepted, AcceptorNode, Partition}, [])
+    end,
+    ok.
 
 
 %%  @private
@@ -976,7 +1062,16 @@ step_prepared(Name, StepNum, ProposerNode, Accepted, AcceptorNode, Partition) ->
 %%  Sent from a proposer to all acceptors.
 %%
 step_accept(Name, StepNum, Partition, Proposal) ->
-    abcast = gen_server:abcast(Partition, Name, {step_accept, StepNum, Proposal, Partition}),
+    error_logger:info_msg("[cmeik] sending accept broadcast ~p => ~p for step: ~p proposal: ~p", [node(), Partition, StepNum, Proposal]),
+
+    case ?DISTERL of 
+        true ->
+            abcast = gen_server:abcast(Partition, Name, {step_accept, node(), StepNum, Proposal, Partition});
+        false ->
+            lists:foreach(fun(N) ->
+                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_accept, node(), StepNum, Proposal, Partition}, [])
+            end, Partition)
+    end,
     ok.
 
 
@@ -984,8 +1079,17 @@ step_accept(Name, StepNum, Partition, Proposal) ->
 %%  Paxos, phase 2, the `accepted' message.
 %%  Sent from from all acceptors to all the learners.
 %%
-step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode) ->
-    abcast = gen_server:abcast(Partition, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}),
+step_accepted(Name, StepNum, Partition, Proposal, AcceptorNode, ProposerNode) ->
+    error_logger:info_msg("[cmeik] sending accepted broadcast ~p => ~p for step: ~p proposal: ~p, acceptor_node: ~p, proposer_node: ~p", [node(), Partition, StepNum, Proposal, AcceptorNode, ProposerNode]),
+
+    case ?DISTERL of 
+        true ->
+            _ = gen_server:abcast(Partition, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition});
+        false ->
+            lists:foreach(fun(N) ->
+                partisan_pluggable_peer_service_manager:cast_message(N, undefined, Name, {step_accepted, StepNum, Proposal, AcceptorNode, Partition}, [])
+            end, Partition)
+    end,
     ok.
 
 
@@ -1113,6 +1217,7 @@ join_sync_req(PeerNode, From, Till, MaxCount, State = #state{name = Name, node =
 %%  Handle response to the `join_sync_req'.
 %%
 join_sync_res(PeerNode, From, Till, PeerIds, State) ->
+    error_logger:warning_msg("[cmeik] issuing join for ~p at node ~p with from: ~p till: ~p~n", [PeerNode, node(), From, Till]),
     #state{
         cb_mod  = CbMod,
         cb_st   = CbSt,
@@ -1124,6 +1229,7 @@ join_sync_res(PeerNode, From, Till, PeerIds, State) ->
     %
     % Collect the duplicated ids (and ongoing steps)
     {ok, DuplicatedIds, NewCbSt} = CbMod:handle_check(PeerIds, CbSt),
+    error_logger:warning_msg("[cmeik] duplicated ids at node ~p for join of ~p are ~p~n", [node(), PeerNode, DuplicatedIds]),
     DuplicatedSteps = lists:filter(fun (Id) ->
         case Steps of
             #{Id := #step{purpose = Purpose}} ->
@@ -1210,7 +1316,9 @@ join_finalize(PeerNode, State = #state{name = Name, node = ThisNode, mode = Mode
 %%  Checks, if the join procedure is completed.
 %%
 join_completed(#join{from = From, till = Till, dup_ids = []}) when From >= Till -> true;
-join_completed(#join{from = From, till = Till              }) when From >= Till -> dup_ids;
+join_completed(#join{from = From, till = Till              }) when From >= Till -> 
+    error_logger:warning_msg("[cmeik] join_completed: from: ~p, till: ~p~n", [From, Till]),
+    dup_ids;
 join_completed(#join{                                      })                   -> checking.
 
 

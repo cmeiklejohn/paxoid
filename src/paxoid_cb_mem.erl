@@ -88,6 +88,8 @@ describe(State = #state{ids = Ids}) ->
 %%  Stores new ID allocated to this node, and upates known maximum, if needed.
 %%
 handle_new_id(NewId, State = #state{max = Max, ids = Ids}) ->
+    error_logger:info_msg("[cmeik] handle_new_id node: ~p new id: ~p max: ~p~n", [node(), NewId, Max]),
+
     NewState = State#state{
         max = erlang:max(NewId, Max),
         ids = [NewId | Ids]
@@ -99,6 +101,8 @@ handle_new_id(NewId, State = #state{max = Max, ids = Ids}) ->
 %%  Replaces duplicated ID with new one, and upates known maximum, if needed.
 %%
 handle_new_map(OldId, NewId, State = #state{max = Max, ids = Ids, map = Map}) ->
+    error_logger:info_msg("[cmeik] handle_new_map node: ~p old id: ~p new id: ~p max: ~p~n", [node(), OldId, NewId, Max]),
+
     MapId = fun
         (Id) when Id =:= OldId -> NewId;
         (Id)                   -> Id
@@ -115,6 +119,8 @@ handle_new_map(OldId, NewId, State = #state{max = Max, ids = Ids, map = Map}) ->
 %%  Updates maximal known ID in the scope of the entire cluster.
 %%
 handle_new_max(NewMax, State) ->
+    error_logger:info_msg("[cmeik] node: ~p new max: ~p~n", [node(), NewMax]),
+
     NewState = State#state{
         max = NewMax
     },
